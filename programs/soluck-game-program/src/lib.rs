@@ -21,6 +21,7 @@ pub mod soluck_game_program {
     use solana_program::{instruction::Instruction, program::invoke};
 
     pub fn init_config(ctx: Context<InitConfig>, authorities: Vec<Pubkey>) -> Result<()> {
+        /* Context States and Checks */
         let config = &mut ctx.accounts.config;
 
         if config.is_init == true {
@@ -28,42 +29,60 @@ pub mod soluck_game_program {
         }
 
         config.is_init = true;
-        config.game_count = 1; // or 0 ?
+        config.game_count = 1;
         config.auth = authorities;
         config.whitelisted_tokens = Vec::new();
+        config.commission_rate = 5;
 
         Ok(())
     }
 
     pub fn add_token_data(
-        ctx: Context<UpdateTokenData>,
+        ctx: Context<UpdateConfigData>,
         token_address: Pubkey,
         oracle_address: Pubkey,
     ) -> Result<()> {
+        /* Context States and Checks */
         let config = &mut ctx.accounts.config;
+        let signer = ctx.accounts.auth.key;
 
-        // TODO: Auth control
-        // TODO: Check if the token exists in the list
+        if !config.auth.contains(signer) {
+            return Err(GameErrors::NotAuth.into());
+        }
 
         if config.whitelisted_tokens.len() >= 10 {
             return Err(GameErrors::TokenDataListFull.into());
         }
 
+        if config
+            .whitelisted_tokens
+            .iter()
+            .any(|token_data| token_data.token_address == token_address)
+        {
+            return Err(GameErrors::TokenAlreadyExists.into());
+        }
+
+        /* Save the Token to the Whitelist */
         let new_token_data = TokenData {
             token_address,
             oracle_address,
         };
 
         config.whitelisted_tokens.push(new_token_data);
+
         Ok(())
     }
 
-    pub fn remove_token_data(ctx: Context<UpdateTokenData>, token_address: Pubkey) -> Result<()> {
+    pub fn remove_token_data(ctx: Context<UpdateConfigData>, token_address: Pubkey) -> Result<()> {
+        /* Context States and Checks */
         let config = &mut ctx.accounts.config;
+        let signer = ctx.accounts.auth.key;
 
-        // TODO: Auth control
-        // TODO: Check if the token exists in the list
+        if !config.auth.contains(signer) {
+            return Err(GameErrors::NotAuth.into());
+        }
 
+        /* Remove the Token from the List */
         if let Some(index) = config
             .whitelisted_tokens
             .iter()
@@ -76,10 +95,32 @@ pub mod soluck_game_program {
         }
     }
 
+    pub fn update_commission_rate(
+        ctx: Context<UpdateConfigData>,
+        commission_rate: u64,
+    ) -> Result<()> {
+        /* Context States and Checks */
+        let config = &mut ctx.accounts.config;
+        let signer = ctx.accounts.auth.key;
+
+        if !config.auth.contains(signer) {
+            return Err(GameErrors::NotAuth.into());
+        }
+
+        if commission_rate > 100 {
+            return Err(GameErrors::CommissionRateOutOfRange.into());
+        } else {
+            config.commission_rate = commission_rate;
+            Ok(())
+        }
+    }
+
     pub fn init_game(ctx: Context<InitGame>, min_limit: u64, max_limit: u64) -> Result<()> {
-        let config = &ctx.accounts.config;
+        /* Context States and Checks */
+        let config = &mut ctx.accounts.config;
         let signer = ctx.accounts.auth.key;
         let game = &mut ctx.accounts.game;
+        let game_bump = ctx.bumps.game;
 
         if !config.auth.contains(signer) {
             return Err(GameErrors::NotAuth.into());
@@ -89,25 +130,21 @@ pub mod soluck_game_program {
             return Err(GameErrors::GameAlreadyInitialized.into());
         }
 
-        let game_bump = ctx.bumps.game;
-
         // Set min max limits
+        game.min_limit = min_limit;
+        game.max_limit = max_limit;
         game.status = 1;
         game.players = Vec::new();
         game.values = Vec::new();
         game.bump = game_bump;
 
-        config.game_count += 1; // Check game count
-
-        // Init room 1 game_count = 1, pda count = 2, game_count updated to 2
-        // Init room 2 game_count = 2, pda count = 3, game_count updated to 3
-        // Init room 3 game_count = 3, pda count = 4, game_count updated to 4
-
+        config.game_count += 1;
 
         Ok(())
     }
 
     pub fn enter_game_sol(ctx: Context<EnterGameSol>, amount: u64, price: u64) -> Result<()> {
+        /* Context States and Checks */
         let game = &mut ctx.accounts.game;
         let player = &ctx.accounts.player;
 
@@ -115,19 +152,21 @@ pub mod soluck_game_program {
             return Err(GameErrors::NotInProgress.into());
         }
 
-        /*let feed_account = ctx.accounts.feed.data.borrow();
+        /* TODO: Switchboard integration to be added
+        let feed_account = ctx.accounts.feed.data.borrow();
         let feed = PullFeedAccountData::parse(feed_account).unwrap();
         let price = feed.value();
-
         msg!("price: {:?}", price);*/
-        let feed_price: u64 = price;
 
+        let feed_price: u64 = price;
         let sol_usdc_value = amount * feed_price;
 
+        /* Room Limit Control */
         if sol_usdc_value > game.max_limit || sol_usdc_value < game.min_limit {
             return Err(GameErrors::PriceOutOfRange.into());
         }
 
+        /* SOL Transfer to the Game PDA */
         let transfer_instruction = system_instruction::transfer(&player.key(), &game.key(), amount);
         anchor_lang::solana_program::program::invoke_signed(
             &transfer_instruction,
@@ -139,24 +178,43 @@ pub mod soluck_game_program {
             &[],
         )?;
 
+        /* Save User to the Game PDA */
         game.players.push(player.key());
         game.values.push(sol_usdc_value);
+
+        emit!(EnterGameEvent {
+            player: player.key(),
+        });
 
         Ok(())
     }
 
     pub fn enter_game_spl(ctx: Context<EnterGameSpl>) -> Result<()> {
+        /* Context States and Checks */
+        let config = &ctx.accounts.config;
         let game = &mut ctx.accounts.game;
-        let destination = &ctx.accounts.to_ata;
         let source = &ctx.accounts.from_ata;
-        let token_program = &ctx.accounts.token_program;
-        let authority = &ctx.accounts.player;
-        let player = &ctx.accounts.player;
+        let token_mint = source.mint;
+
+        if !config
+            .whitelisted_tokens
+            .iter()
+            .any(|token_data| token_data.token_address == token_mint)
+        {
+            return Err(GameErrors::NotAuth.into());
+        }
 
         if game.status != 1 {
             return Err(GameErrors::NotInProgress.into());
         }
 
+        /* Rest of the Context State */
+        let destination = &ctx.accounts.to_ata;
+        let token_program = &ctx.accounts.token_program;
+        let authority = &ctx.accounts.player;
+        let player = &ctx.accounts.player;
+
+        /* SPL Transfer to the Game PDA */
         let cpi_accounts = SplTransfer {
             from: source.to_account_info().clone(),
             to: destination.to_account_info().clone(),
@@ -167,18 +225,22 @@ pub mod soluck_game_program {
 
         token::transfer(CpiContext::new(cpi_program, cpi_accounts), spl_amount)?;
 
+        /* Save User to the Game PDA */
         game.players.push(player.key());
         game.values.push(spl_amount);
+
+        emit!(EnterGameEvent {
+            player: player.key(),
+        });
 
         Ok(())
     }
 
     pub fn get_random_decide_winner(ctx: Context<GetRandomDecideWinner>) -> Result<()> {
+        /* Context States and Checks */
         let config = &mut ctx.accounts.config;
-        let game = &mut ctx.accounts.game;
-
         let signer = ctx.accounts.sender.key;
-        let rng_program = ctx.accounts.rng_program.key;
+        let game = &mut ctx.accounts.game;
 
         if !config.auth.contains(signer) {
             return Err(GameErrors::NotAuth.into());
@@ -189,6 +251,7 @@ pub mod soluck_game_program {
         }
 
         /* Feed Protocol's instruction calls */
+        let rng_program = ctx.accounts.rng_program.key;
         let instruction = Instruction {
             program_id: *rng_program,
             accounts: vec![
@@ -220,6 +283,7 @@ pub mod soluck_game_program {
 
         invoke(&instruction, account_infos)?;
 
+        /* Receive the Random Number from Feed */
         let returned_data: (Pubkey, Vec<u8>) = get_return_data().unwrap();
 
         if &returned_data.0 == rng_program {
@@ -244,7 +308,6 @@ pub mod soluck_game_program {
             }
 
             game.status = 2;
-            //config.game_count += 1; // Check
 
             emit!(WinnerEvent {
                 winner: game.winner,
@@ -257,59 +320,58 @@ pub mod soluck_game_program {
     }
 
     pub fn transfer_to_winner(ctx: Context<TransferToWinner>) -> Result<()> {
+        /* Context States and Checks */
+        let config = &ctx.accounts.config;
+        let signer = ctx.accounts.sender.key;
         let game = &ctx.accounts.game;
         let winner = &ctx.accounts.winner;
-        let source = &ctx.accounts.from_ata;
-        let token_program = &ctx.accounts.token_program;
-        let destination = &ctx.accounts.to_ata;
 
-        let pda_winner = game.winner;
-
-        // TODO: Auth control
+        if !config.auth.contains(signer) {
+            return Err(GameErrors::NotAuth.into());
+        }
 
         if game.status != 2 {
             return Err(GameErrors::InProgress.into());
         }
 
-        if winner.key() != pda_winner.key() {
+        if winner.key() != game.winner.key() {
             return Err(GameErrors::NotWinner.into());
         }
 
-        // TODO: Calculate Fees + Comission
+        let source = &ctx.accounts.from_ata;
+        let token_program = &ctx.accounts.token_program;
+        let destination = &ctx.accounts.to_ata;
+        let commission_rate = ctx.accounts.config.commission_rate;
 
-        let tx_fees = 0;
-
-        let values = &game.values;
-
+        // Fee Calculation
         let spl_amount = source.amount;
         let sol_amount: u64 = game.to_account_info().lamports();
-        let total_value = values.iter().sum::<u64>(); // [5, 7 , 14] = 26
+        let total_value = game.values.iter().sum::<u64>();
         let sol_usdc_value = total_value - spl_amount;
 
-        let sol_fees = 0;
-        let spl_fees = 0;
+        let commission = total_value * commission_rate / 100;
 
-        // Transfer the SPL tokens
+        let spl_amount_after_commission =
+            spl_amount.saturating_sub(commission * spl_amount / total_value);
+        let sol_amount_after_commission =
+            sol_amount.saturating_sub(commission * sol_usdc_value / total_value);
+
+        // Transfer the SPL tokens to the winner
         let cpi_accounts = SplTransfer {
             from: source.to_account_info().clone(),
             to: destination.to_account_info().clone(),
-            authority: game.to_account_info().clone(), 
+            authority: game.to_account_info().clone(),
         };
         let cpi_program = token_program.to_account_info();
-        let spl_amount = source.amount;
 
         token::transfer(
             CpiContext::new(cpi_program, cpi_accounts),
-            spl_amount - spl_fees,
+            spl_amount_after_commission,
         )?;
 
-        // Transfer the SOL
-
-        let transfer_instruction = system_instruction::transfer(
-            &game.key(),
-            &winner.key(),
-            sol_amount - sol_fees - tx_fees,
-        );
+        // Transfer the SOL  to the winner
+        let transfer_instruction =
+            system_instruction::transfer(&game.key(), &winner.key(), sol_amount_after_commission);
         anchor_lang::solana_program::program::invoke_signed(
             &transfer_instruction,
             &[
@@ -352,6 +414,7 @@ pub struct ConfigData {
     pub game_count: u64,
     pub auth: Vec<Pubkey>,
     pub whitelisted_tokens: Vec<TokenData>,
+    pub commission_rate: u64,
 }
 
 #[account]
@@ -361,7 +424,7 @@ pub struct TokenData {
 }
 
 #[derive(Accounts)]
-pub struct UpdateTokenData<'info> {
+pub struct UpdateConfigData<'info> {
     #[account(mut)]
     pub config: Account<'info, ConfigData>,
     #[account(signer)]
@@ -489,6 +552,11 @@ pub struct TransferToWinner<'info> {
 
 // Events
 #[event]
+pub struct EnterGameEvent {
+    player: Pubkey,
+}
+
+#[event]
 pub struct WinnerEvent {
     winner: Pubkey,
 }
@@ -520,4 +588,8 @@ pub enum GameErrors {
     TokenDataNotFound,
     #[msg("Entry Price out of range")]
     PriceOutOfRange,
+    #[msg("Token already exists")]
+    TokenAlreadyExists,
+    #[msg("Commission rate out of range")]
+    CommissionRateOutOfRange,
 }
