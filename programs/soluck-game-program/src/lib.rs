@@ -20,7 +20,7 @@ pub mod soluck_game_program {
     use anchor_spl::token;
     use solana_program::{instruction::Instruction, program::invoke};
 
-    pub fn init_config(ctx: Context<InitConfig>, authorities: Vec<Pubkey>) -> Result<()> {
+    pub fn init_config(ctx: Context<InitConfig>, auth: Pubkey) -> Result<()> {
         /* Context States and Checks */
         let config = &mut ctx.accounts.config;
 
@@ -30,7 +30,7 @@ pub mod soluck_game_program {
 
         config.is_init = true;
         config.game_count = 1;
-        config.auth = authorities;
+        config.auth = auth;
         config.whitelisted_tokens = Vec::new();
         config.commission_rate = 5;
 
@@ -46,7 +46,7 @@ pub mod soluck_game_program {
         let config = &mut ctx.accounts.config;
         let signer = ctx.accounts.auth.key;
 
-        if !config.auth.contains(signer) {
+        if *signer != config.auth {
             return Err(GameErrors::NotAuth.into());
         }
 
@@ -78,7 +78,7 @@ pub mod soluck_game_program {
         let config = &mut ctx.accounts.config;
         let signer = ctx.accounts.auth.key;
 
-        if !config.auth.contains(signer) {
+        if *signer != config.auth {
             return Err(GameErrors::NotAuth.into());
         }
 
@@ -103,7 +103,7 @@ pub mod soluck_game_program {
         let config = &mut ctx.accounts.config;
         let signer = ctx.accounts.auth.key;
 
-        if !config.auth.contains(signer) {
+        if *signer != config.auth {
             return Err(GameErrors::NotAuth.into());
         }
 
@@ -121,7 +121,7 @@ pub mod soluck_game_program {
         let signer = ctx.accounts.auth.key;
         let game = &mut ctx.accounts.game;
 
-        if !config.auth.contains(signer) {
+        if *signer != config.auth {
             return Err(GameErrors::NotAuth.into());
         }
 
@@ -244,7 +244,7 @@ pub mod soluck_game_program {
         let game = &mut ctx.accounts.game;
        
 
-        if !config.auth.contains(signer) {
+        if *signer != config.auth {
             return Err(GameErrors::NotAuth.into());
         }
 
@@ -329,7 +329,7 @@ pub mod soluck_game_program {
         let game = &ctx.accounts.game;
         let winner = &ctx.accounts.winner;
 
-        if !config.auth.contains(signer) {
+        if *signer != config.auth {
             return Err(GameErrors::NotAuth.into());
         }
 
@@ -420,7 +420,7 @@ pub struct InitConfig<'info> {
 pub struct ConfigData {
     pub is_init: bool,
     pub game_count: u64,
-    pub auth: Vec<Pubkey>,
+    pub auth: Pubkey,
     pub whitelisted_tokens: Vec<TokenData>,
     pub commission_rate: u64,
 }
