@@ -120,7 +120,6 @@ pub mod soluck_game_program {
         let config = &mut ctx.accounts.config;
         let signer = ctx.accounts.auth.key;
         let game = &mut ctx.accounts.game;
-        let game_bump = ctx.bumps.game;
 
         if !config.auth.contains(signer) {
             return Err(GameErrors::NotAuth.into());
@@ -129,14 +128,12 @@ pub mod soluck_game_program {
         if game.status != 0 {
             return Err(GameErrors::GameAlreadyInitialized.into());
         }
-
-        // Set min max limits
+        
         game.min_limit = min_limit;
         game.max_limit = max_limit;
         game.status = 1;
         game.players = Vec::new();
         game.values = Vec::new();
-        game.bump = game_bump;
 
         config.game_count += 1;
 
@@ -182,8 +179,9 @@ pub mod soluck_game_program {
         game.players.push(player.key());
         game.values.push(sol_usdc_value);
 
-        emit!(EnterGameEvent {
+        emit!(EnterGameSolEvent {
             player: player.key(),
+            amount: amount,
         });
 
         Ok(())
@@ -195,6 +193,7 @@ pub mod soluck_game_program {
         let game = &mut ctx.accounts.game;
         let source = &ctx.accounts.from_ata;
         let token_mint = source.mint;
+        
 
         if !config
             .whitelisted_tokens
@@ -229,8 +228,10 @@ pub mod soluck_game_program {
         game.players.push(player.key());
         game.values.push(spl_amount);
 
-        emit!(EnterGameEvent {
+        emit!(EnterGameSplEvent {
             player: player.key(),
+            amount: spl_amount,
+            mint: token_mint,
         });
 
         Ok(())
@@ -241,6 +242,7 @@ pub mod soluck_game_program {
         let config = &mut ctx.accounts.config;
         let signer = ctx.accounts.sender.key;
         let game = &mut ctx.accounts.game;
+       
 
         if !config.auth.contains(signer) {
             return Err(GameErrors::NotAuth.into());
@@ -311,6 +313,7 @@ pub mod soluck_game_program {
 
             emit!(WinnerEvent {
                 winner: game.winner,
+                game: game.key(),
             });
 
             Ok(())
@@ -320,7 +323,7 @@ pub mod soluck_game_program {
     }
 
     pub fn transfer_to_winner(ctx: Context<TransferToWinner>) -> Result<()> {
-        /* Context States and Checks */
+         /* Context States and Checks */
         let config = &ctx.accounts.config;
         let signer = ctx.accounts.sender.key;
         let game = &ctx.accounts.game;
@@ -382,6 +385,11 @@ pub mod soluck_game_program {
             &[],
         )?;
 
+        Ok(())
+    }
+
+    pub fn withdraw_from_pda(ctx: Context<TransferToWinner>) -> Result<()>{
+        //TODO: Implement
         Ok(())
     }
 }
@@ -473,9 +481,7 @@ pub struct EnterGameSol<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
 
-    //pub feed: AccountInfo<'info>,
     pub token_program: Program<'info, Token>,
-
     pub system_program: Program<'info, System>,
 }
 
@@ -493,8 +499,8 @@ pub struct EnterGameSpl<'info> {
     pub from_ata: Account<'info, TokenAccount>,
     #[account(mut)]
     pub to_ata: Account<'info, TokenAccount>,
+    
     pub token_program: Program<'info, Token>,
-
     pub system_program: Program<'info, System>,
 }
 
@@ -552,13 +558,22 @@ pub struct TransferToWinner<'info> {
 
 // Events
 #[event]
-pub struct EnterGameEvent {
+pub struct EnterGameSolEvent {
     player: Pubkey,
+    amount: u64,
+}
+
+#[event]
+pub struct EnterGameSplEvent {
+    player: Pubkey,
+    amount: u64,
+    mint: Pubkey,
 }
 
 #[event]
 pub struct WinnerEvent {
     winner: Pubkey,
+    game: Pubkey,
 }
 
 // Errors
